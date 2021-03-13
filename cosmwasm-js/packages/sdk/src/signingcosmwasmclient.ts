@@ -5,17 +5,21 @@ import pako from "pako";
 import { isValidBuilder } from "./builder";
 import { Account, CosmWasmClient, GetNonceResult, PostTxResult } from "./cosmwasmclient";
 import { makeSignBytes } from "./encoding";
-import { findAttribute, Log, Attribute } from "./logs";
+import { SecretUtils } from "./enigmautils";
+import { findAttribute, Log } from "./logs";
 import { BroadcastMode } from "./restclient";
 import {
   Coin,
+  Msg,
   MsgExecuteContract,
   MsgInstantiateContract,
   MsgSend,
   MsgStoreCode,
   StdFee,
   StdSignature,
+  StdTx,
 } from "./types";
+import { OfflineSigner } from "./wallet";
 
 export interface SigningCallback {
   (signBytes: Uint8Array): Promise<StdSignature>;
@@ -101,8 +105,7 @@ export interface ExecuteResult {
 
 export class SigningCosmWasmClient extends CosmWasmClient {
   public readonly senderAddress: string;
-
-  private readonly signCallback: SigningCallback;
+  private readonly signer: OfflineSigner | SigningCallback;
   private readonly fees: FeeTable;
 
   /**
@@ -113,23 +116,32 @@ export class SigningCosmWasmClient extends CosmWasmClient {
    *
    * @param apiUrl The URL of a Cosmos SDK light client daemon API (sometimes called REST server or REST API)
    * @param senderAddress The address that will sign and send transactions using this instance
-   * @param signCallback An asynchonous callback to create a signature for a given transaction. This can be implemented using secure key stores that require user interaction.
+   * @param signer An asynchronous callback to create a signature for a given transaction. This can be implemented using secure key stores that require user interaction. Or a newer OfflineSigner type that handles that stuff
+   * @param seedOrEnigmaUtils
    * @param customFees The fees that are paid for transactions
    * @param broadcastMode Defines at which point of the transaction processing the postTx method (i.e. transaction broadcasting) returns
    */
   public constructor(
     apiUrl: string,
     senderAddress: string,
-    signCallback: SigningCallback,
-    seed?: Uint8Array,
+    signer: SigningCallback | OfflineSigner,
+    seedOrEnigmaUtils?: Uint8Array | SecretUtils,
     customFees?: Partial<FeeTable>,
     broadcastMode = BroadcastMode.Block,
   ) {
-    super(apiUrl, seed, broadcastMode);
-    this.anyValidAddress = senderAddress;
+    if (seedOrEnigmaUtils instanceof Uint8Array) {
+      super(apiUrl, seedOrEnigmaUtils, broadcastMode);
+    } else {
+      super(apiUrl, undefined, broadcastMode);
+    }
 
+    this.anyValidAddress = senderAddress;
     this.senderAddress = senderAddress;
-    this.signCallback = signCallback;
+    //this.signCallback = signCallback ? signCallback : undefined;
+    this.signer = signer;
+    if (seedOrEnigmaUtils && !(seedOrEnigmaUtils instanceof Uint8Array)) {
+      this.restClient.enigmautils = seedOrEnigmaUtils;
+    }
     this.fees = { ...defaultFees, ...(customFees || {}) };
   }
 
@@ -141,14 +153,57 @@ export class SigningCosmWasmClient extends CosmWasmClient {
     return super.getAccount(address || this.senderAddress);
   }
 
+  async signAdapter(
+    msgs: Msg[],
+    fee: StdFee,
+    chainId: string,
+    memo: string,
+    accountNumber: number,
+    sequence: number,
+  ): Promise<StdTx> {
+    // offline signer interface
+    if ("sign" in this.signer) {
+      const signResponse = await this.signer.sign(this.senderAddress, {
+        chain_id: chainId,
+        account_number: String(accountNumber),
+        sequence: String(sequence),
+        fee: fee,
+        msgs: msgs,
+        memo: memo,
+      });
+
+      return {
+        msg: msgs,
+        fee: signResponse.signed.fee,
+        memo: signResponse.signed.memo,
+        signatures: [signResponse.signature],
+      };
+    } else {
+      // legacy interface
+      const signBytes = makeSignBytes(msgs, fee, chainId, memo, accountNumber, sequence);
+      const signature = await this.signer(signBytes);
+      return {
+        msg: msgs,
+        fee: fee,
+        memo: memo,
+        signatures: [signature],
+      };
+    }
+  }
+
   /** Uploads code and returns a receipt, including the code ID */
-  public async upload(wasmCode: Uint8Array, meta: UploadMeta = {}, memo = ""): Promise<UploadResult> {
+  public async upload(
+    wasmCode: Uint8Array,
+    meta: UploadMeta = {},
+    memo = "",
+    fee: StdFee = this.fees.upload,
+  ): Promise<UploadResult> {
     const source = meta.source || "";
     const builder = prepareBuilder(meta.builder);
 
     const compressed = pako.gzip(wasmCode, { level: 9 });
     const storeCodeMsg: MsgStoreCode = {
-      type: "wasm/store-code",
+      type: "wasm/MsgStoreCode",
       value: {
         sender: this.senderAddress,
         // eslint-disable-next-line @typescript-eslint/camelcase
@@ -157,17 +212,9 @@ export class SigningCosmWasmClient extends CosmWasmClient {
         builder: builder,
       },
     };
-    const fee = this.fees.upload;
     const { accountNumber, sequence } = await this.getNonce();
     const chainId = await this.getChainId();
-    const signBytes = makeSignBytes([storeCodeMsg], fee, chainId, memo, accountNumber, sequence);
-    const signature = await this.signCallback(signBytes);
-    const signedTx = {
-      msg: [storeCodeMsg],
-      fee: fee,
-      memo: memo,
-      signatures: [signature],
-    };
+    const signedTx = await this.signAdapter([storeCodeMsg], fee, chainId, memo, accountNumber, sequence);
 
     const result = await this.postTx(signedTx);
     const codeIdAttr = findAttribute(result.logs, "message", "code_id");
@@ -188,40 +235,61 @@ export class SigningCosmWasmClient extends CosmWasmClient {
     label: string,
     memo = "",
     transferAmount?: readonly Coin[],
+    fee: StdFee = this.fees.init,
   ): Promise<InstantiateResult> {
     const contractCodeHash = await this.restClient.getCodeHashByCodeId(codeId);
     const instantiateMsg: MsgInstantiateContract = {
-      type: "wasm/instantiate",
+      type: "wasm/MsgInstantiateContract",
       value: {
         sender: this.senderAddress,
         // eslint-disable-next-line @typescript-eslint/camelcase
         code_id: codeId.toString(),
         label: label,
         // eslint-disable-next-line @typescript-eslint/camelcase
+        callback_code_hash: "",
+        // eslint-disable-next-line @typescript-eslint/camelcase
         init_msg: Encoding.toBase64(await this.restClient.enigmautils.encrypt(contractCodeHash, initMsg)),
         // eslint-disable-next-line @typescript-eslint/camelcase
         init_funds: transferAmount || [],
+        // eslint-disable-next-line @typescript-eslint/camelcase
+        callback_sig: null,
       },
     };
-    const fee = this.fees.init;
     const { accountNumber, sequence } = await this.getNonce();
     const chainId = await this.getChainId();
-    const signBytes = makeSignBytes([instantiateMsg], fee, chainId, memo, accountNumber, sequence);
-
-    const signature = await this.signCallback(signBytes);
-    const signedTx = {
-      msg: [instantiateMsg],
-      fee: fee,
-      memo: memo,
-      signatures: [signature],
-    };
-
-    const result = await this.postTx(signedTx);
-    const contractAddressAttr = findAttribute(result.logs, "message", "contract_address");
+    const signedTx = await this.signAdapter([instantiateMsg], fee, chainId, memo, accountNumber, sequence);
 
     const nonce = Encoding.fromBase64(instantiateMsg.value.init_msg).slice(0, 32);
+    let result;
+    try {
+      result = await this.postTx(signedTx);
+    } catch (err) {
+      try {
+        const errorMessageRgx = /contract failed: encrypted: (.+?): failed to execute message; message index: 0/g;
 
-    const logs = await this.restClient.decryptLogs(result.logs, nonce);
+        const rgxMatches = errorMessageRgx.exec(err.message);
+        if (rgxMatches == null || rgxMatches.length != 2) {
+          throw err;
+        }
+
+        const errorCipherB64 = rgxMatches[1];
+        const errorCipherBz = Encoding.fromBase64(errorCipherB64);
+
+        const errorPlainBz = await this.restClient.enigmautils.decrypt(errorCipherBz, nonce);
+
+        err.message = err.message.replace(errorCipherB64, Encoding.fromUtf8(errorPlainBz));
+      } catch (decryptionError) {
+        throw new Error(
+          `Failed to decrypt the following error message: ${err.message}. Decryption error of the error message: ${decryptionError.message}`,
+        );
+      }
+
+      throw err;
+    }
+
+    const contractAddressAttr = findAttribute(result.logs, "message", "contract_address");
+
+    const logs = await this.restClient.decryptLogs(result.logs, [nonce]);
 
     return {
       contractAddress: contractAddressAttr.value,
@@ -231,16 +299,98 @@ export class SigningCosmWasmClient extends CosmWasmClient {
     };
   }
 
+  public async multiExecute(
+    inputMsgs: Array<{
+      contractAddress: string;
+      handleMsg: object;
+      transferAmount?: readonly Coin[];
+    }>,
+    memo: string = "",
+    totalFee?: StdFee,
+  ): Promise<ExecuteResult> {
+    const msgs: Array<MsgExecuteContract> = [];
+    for (const inputMsg of inputMsgs) {
+      const contractCodeHash = await this.restClient.getCodeHashByContractAddr(inputMsg.contractAddress);
+
+      const msg: MsgExecuteContract = {
+        type: "wasm/MsgExecuteContract",
+        value: {
+          sender: this.senderAddress,
+          contract: inputMsg.contractAddress,
+          callback_code_hash: "",
+          msg: Encoding.toBase64(
+            await this.restClient.enigmautils.encrypt(contractCodeHash, inputMsg.handleMsg),
+          ),
+          // eslint-disable-next-line @typescript-eslint/camelcase
+          sent_funds: inputMsg.transferAmount ?? [],
+          // eslint-disable-next-line @typescript-eslint/camelcase
+          callback_sig: null,
+        },
+      };
+
+      msgs.push(msg);
+    }
+
+    const { accountNumber, sequence } = await this.getNonce();
+    const fee = totalFee ?? {
+      gas: String(Number(this.fees.exec.gas) * inputMsgs.length),
+      amount: this.fees.exec.amount,
+    };
+    const chainId = await this.getChainId();
+    const signedTx = await this.signAdapter(msgs, fee, chainId, memo, accountNumber, sequence);
+
+    let result;
+    try {
+      result = await this.postTx(signedTx);
+    } catch (err) {
+      try {
+        const errorMessageRgx = /contract failed: encrypted: (.+?): failed to execute message; message index: (\d+)/g;
+
+        const rgxMatches = errorMessageRgx.exec(err.message);
+        if (rgxMatches == null || rgxMatches.length != 3) {
+          throw err;
+        }
+
+        const errorCipherB64 = rgxMatches[1];
+        const errorCipherBz = Encoding.fromBase64(errorCipherB64);
+
+        const msgIndex = Number(rgxMatches[2]);
+        const nonce = Encoding.fromBase64(msgs[msgIndex].value.msg).slice(0, 32);
+
+        const errorPlainBz = await this.restClient.enigmautils.decrypt(errorCipherBz, nonce);
+
+        err.message = err.message.replace(errorCipherB64, Encoding.fromUtf8(errorPlainBz));
+      } catch (decryptionError) {
+        throw new Error(
+          `Failed to decrypt the following error message: ${err.message}. Decryption error of the error message: ${decryptionError.message}`,
+        );
+      }
+
+      throw err;
+    }
+
+    const nonces = msgs.map((msg) => Encoding.fromBase64(msg.value.msg).slice(0, 32));
+    const data = await this.restClient.decryptDataField(result.data, nonces);
+    const logs = await this.restClient.decryptLogs(result.logs, nonces);
+
+    return {
+      logs: logs,
+      transactionHash: result.transactionHash,
+      data: data,
+    };
+  }
+
   public async execute(
     contractAddress: string,
     handleMsg: object,
     memo = "",
     transferAmount?: readonly Coin[],
+    fee: StdFee = this.fees.exec,
   ): Promise<ExecuteResult> {
     const contractCodeHash = await this.restClient.getCodeHashByContractAddr(contractAddress);
 
     const executeMsg: MsgExecuteContract = {
-      type: "wasm/execute",
+      type: "wasm/MsgExecuteContract",
       value: {
         sender: this.senderAddress,
         contract: contractAddress,
@@ -248,19 +398,13 @@ export class SigningCosmWasmClient extends CosmWasmClient {
         msg: Encoding.toBase64(await this.restClient.enigmautils.encrypt(contractCodeHash, handleMsg)),
         // eslint-disable-next-line @typescript-eslint/camelcase
         sent_funds: transferAmount || [],
+        // eslint-disable-next-line @typescript-eslint/camelcase
+        callback_sig: null,
       },
     };
-    const fee = this.fees.exec;
     const { accountNumber, sequence } = await this.getNonce();
     const chainId = await this.getChainId();
-    const signBytes = makeSignBytes([executeMsg], fee, chainId, memo, accountNumber, sequence);
-    const signature = await this.signCallback(signBytes);
-    const signedTx = {
-      msg: [executeMsg],
-      fee: fee,
-      memo: memo,
-      signatures: [signature],
-    };
+    const signedTx = await this.signAdapter([executeMsg], fee, chainId, memo, accountNumber, sequence);
 
     const nonce = Encoding.fromBase64(executeMsg.value.msg).slice(0, 32);
     let result;
@@ -290,8 +434,8 @@ export class SigningCosmWasmClient extends CosmWasmClient {
       throw err;
     }
 
-    const data = await this.restClient.decryptDataField(result.data, nonce);
-    const logs = await this.restClient.decryptLogs(result.logs, nonce);
+    const data = await this.restClient.decryptDataField(result.data, [nonce]);
+    const logs = await this.restClient.decryptLogs(result.logs, [nonce]);
 
     return {
       logs: logs,
@@ -304,6 +448,7 @@ export class SigningCosmWasmClient extends CosmWasmClient {
     recipientAddress: string,
     transferAmount: readonly Coin[],
     memo = "",
+    fee: StdFee = this.fees.send,
   ): Promise<PostTxResult> {
     const sendMsg: MsgSend = {
       type: "cosmos-sdk/MsgSend",
@@ -315,17 +460,9 @@ export class SigningCosmWasmClient extends CosmWasmClient {
         amount: transferAmount,
       },
     };
-    const fee = this.fees.send;
     const { accountNumber, sequence } = await this.getNonce();
     const chainId = await this.getChainId();
-    const signBytes = makeSignBytes([sendMsg], fee, chainId, memo, accountNumber, sequence);
-    const signature = await this.signCallback(signBytes);
-    const signedTx = {
-      msg: [sendMsg],
-      fee: fee,
-      memo: memo,
-      signatures: [signature],
-    };
+    const signedTx = await this.signAdapter([sendMsg], fee, chainId, memo, accountNumber, sequence);
 
     return this.postTx(signedTx);
   }

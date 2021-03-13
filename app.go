@@ -191,7 +191,7 @@ func NewSecretNetworkApp(
 	// The ParamsKeeper handles parameter storage for the application
 	app.paramsKeeper = params.NewKeeper(app.cdc, keys[params.StoreKey], tKeys[params.TStoreKey])
 	authSubspace := app.paramsKeeper.Subspace(auth.DefaultParamspace)
-	bankSupspace := app.paramsKeeper.Subspace(bank.DefaultParamspace)
+	bankSubspace := app.paramsKeeper.Subspace(bank.DefaultParamspace)
 	stakingSubspace := app.paramsKeeper.Subspace(staking.DefaultParamspace)
 	mintSubspace := app.paramsKeeper.Subspace(mint.DefaultParamspace)
 	distrSubspace := app.paramsKeeper.Subspace(distr.DefaultParamspace)
@@ -210,7 +210,7 @@ func NewSecretNetworkApp(
 	// The BankKeeper allows you perform sdk.Coins interactions
 	app.bankKeeper = bank.NewBaseKeeper(
 		app.accountKeeper,
-		bankSupspace,
+		bankSubspace,
 		app.ModuleAccountAddrs(),
 	)
 
@@ -287,16 +287,8 @@ func NewSecretNetworkApp(
 	}
 	wasmConfig = wasmWrap.Wasm
 
-	supportedFeatures := "staking"
-	// replace with bootstrap flag when we figure out how to test properly and everything works
-	app.regKeeper = reg.NewKeeper(app.cdc, keys[reg.StoreKey], regRouter, reg.EnclaveApi{}, homeDir, app.bootstrap)
-	app.computeKeeper = compute.NewKeeper(
-		app.cdc,
-		keys[compute.StoreKey],
-		app.accountKeeper,
-		app.bankKeeper, app.stakingKeeper, computeRouter, computeDir, wasmConfig, supportedFeatures, nil, nil)
-	// register the proposal types
 	govRouter := gov.NewRouter()
+	// register the proposal types
 	govRouter.AddRoute(gov.RouterKey, gov.ProposalHandler).
 		AddRoute(params.RouterKey, params.NewParamChangeProposalHandler(app.paramsKeeper)).
 		AddRoute(distr.RouterKey, distr.NewCommunityPoolSpendProposalHandler(app.distrKeeper)).
@@ -305,6 +297,15 @@ func NewSecretNetworkApp(
 		app.cdc, keys[gov.StoreKey], govSubspace,
 		app.supplyKeeper, &stakingKeeper, govRouter,
 	)
+
+	supportedFeatures := "staking"
+	// replace with bootstrap flag when we figure out how to test properly and everything works
+	app.regKeeper = reg.NewKeeper(app.cdc, keys[reg.StoreKey], regRouter, reg.EnclaveApi{}, homeDir, app.bootstrap)
+	app.computeKeeper = compute.NewKeeper(
+		app.cdc,
+		keys[compute.StoreKey],
+		app.accountKeeper, &app.bankKeeper, &app.govKeeper, &app.distrKeeper, &app.mintKeeper, &stakingKeeper,
+		computeRouter, computeDir, wasmConfig, supportedFeatures, nil, nil)
 
 	// register the staking hooks
 	// NOTE: stakingKeeper above is passed by reference, so that it will contain these hooks

@@ -1,8 +1,9 @@
 package types
 
 import (
-	sdkErrors "github.com/enigmampc/cosmos-sdk/types/errors"
 	"strings"
+
+	sdkErrors "github.com/enigmampc/cosmos-sdk/types/errors"
 )
 
 // Codes for wasm contract errors
@@ -11,9 +12,6 @@ import (
 // IsEncryptedErrorCode function.
 var (
 	DefaultCodespace = ModuleName
-
-	// ErrCreateFailed error for wasm code that has already been uploaded or failed
-	ErrCreateFailed = sdkErrors.Register(DefaultCodespace, 11, "create contract failed")
 
 	// ErrInstantiateFailed error for rust instantiate contract failure
 	ErrInstantiateFailed = sdkErrors.Register(DefaultCodespace, 2, "instantiate contract failed")
@@ -41,6 +39,21 @@ var (
 
 	// ErrInvalidMsg error when we cannot process the error returned from the contract
 	ErrInvalidMsg = sdkErrors.Register(DefaultCodespace, 10, "invalid CosmosMsg from the contract")
+
+	// ErrEmpty error for empty content
+	ErrEmpty = sdkErrors.Register(DefaultCodespace, 11, "empty")
+
+	// ErrLimit error for content that exceeds a limit
+	ErrLimit = sdkErrors.Register(DefaultCodespace, 12, "exceeds limit")
+
+	// ErrInvalid error for content that is invalid in this context
+	ErrInvalid = sdkErrors.Register(DefaultCodespace, 13, "invalid")
+
+	// ErrDuplicate error for content that exsists
+	ErrDuplicate = sdkErrors.Register(DefaultCodespace, 14, "duplicate")
+
+	// ErrCreateFailed error for wasm code that has already been uploaded or failed
+	ErrCreateFailed = sdkErrors.Register(DefaultCodespace, 15, "create contract failed")
 )
 
 func IsEncryptedErrorCode(code uint32) bool {

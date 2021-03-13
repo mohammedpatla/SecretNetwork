@@ -98,6 +98,10 @@ where
         &mut self.ctx
     }
 
+    pub fn gas_limit(&self) -> u64 {
+        self.gas_limit
+    }
+
     pub fn gas_left(&self) -> u64 {
         self.gas_limit.saturating_sub(self.used_gas)
     }
@@ -106,8 +110,8 @@ where
         self.used_gas
     }
 
-    pub fn init(&mut self, env: &[u8], msg: &[u8]) -> VmResult<InitSuccess> {
-        println!(
+    pub fn init(&mut self, env: &[u8], msg: &[u8], sig_info: &[u8]) -> VmResult<InitSuccess> {
+        trace!(
             "init() called with env: {:?} msg: {:?} enclave_id: {:?} gas_left: {}",
             String::from_utf8_lossy(env),
             String::from_utf8_lossy(msg),
@@ -131,12 +135,15 @@ where
                 env.len(),
                 msg.as_ptr(),
                 msg.len(),
+                sig_info.as_ptr(),
+                sig_info.len(),
             )
         };
 
-        println!(
+        trace!(
             "init() returned with gas_used: {} (gas_limit: {})",
-            used_gas, self.gas_limit
+            used_gas,
+            self.gas_limit
         );
         self.consume_gas(used_gas);
 
@@ -149,8 +156,8 @@ where
         }
     }
 
-    pub fn handle(&mut self, env: &[u8], msg: &[u8]) -> VmResult<HandleSuccess> {
-        println!(
+    pub fn handle(&mut self, env: &[u8], msg: &[u8], sig_info: &[u8]) -> VmResult<HandleSuccess> {
+        trace!(
             "handle() called with env: {:?} msg: {:?} enclave_id: {:?} gas_left: {}",
             String::from_utf8_lossy(env),
             String::from_utf8_lossy(msg),
@@ -174,12 +181,15 @@ where
                 env.len(),
                 msg.as_ptr(),
                 msg.len(),
+                sig_info.as_ptr(),
+                sig_info.len(),
             )
         };
 
-        println!(
+        trace!(
             "handle() returned with gas_used: {} (gas_limit: {})",
-            used_gas, self.gas_limit
+            used_gas,
+            self.gas_limit
         );
         self.consume_gas(used_gas);
 
@@ -193,7 +203,7 @@ where
     }
 
     pub fn query(&mut self, msg: &[u8]) -> VmResult<QuerySuccess> {
-        println!(
+        trace!(
             "query() called with msg: {:?} enclave_id: {:?}",
             String::from_utf8_lossy(msg),
             self.enclave.geteid()
@@ -216,9 +226,10 @@ where
             )
         };
 
-        println!(
+        trace!(
             "query() returned with gas_used: {} (gas_limit: {})",
-            used_gas, self.gas_limit
+            used_gas,
+            self.gas_limit
         );
         self.consume_gas(used_gas);
 

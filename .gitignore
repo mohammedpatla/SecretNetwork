@@ -9,6 +9,7 @@ Enclave_u.o
 /secretd*
 /enigmacli*
 /enigmad*
+secretcli*
 incubator-teaclave-sgx-sdk
 libenclave.a
 libEnclave_u.a
@@ -25,8 +26,10 @@ __debug_bin
 id_tx_io.json
 .idea
 x/compute/internal/keeper/debug.test
-spid.txt
+ias_keys
 api_key.txt
-api_key_production.txt
-spid_production.txt
+spid.txt
+ias_bin_dev.go
+ias_bin_prod.go
+ias_bin_sw.go
 node_modules

@@ -1,11 +1,12 @@
 use super::errors::WasmEngineError;
 use crate::crypto::Ed25519PublicKey;
+use crate::recursion_depth;
 use crate::wasm::types::{IoNonce, SecretMessage};
 use crate::{exports, imports};
 
-use crate::cosmwasm::encoding::Binary;
-use crate::cosmwasm::query::{QueryRequest, WasmQuery};
 use crate::cosmwasm::{
+    encoding::Binary,
+    query::{QueryRequest, WasmQuery},
     std_error::{StdError, StdResult},
     system_error::{SystemError, SystemResult},
 };
@@ -20,7 +21,12 @@ pub fn encrypt_and_query_chain(
     nonce: IoNonce,
     user_public_key: Ed25519PublicKey,
     gas_used: &mut u64,
+    gas_limit: u64,
 ) -> Result<Vec<u8>, WasmEngineError> {
+    if let Some(answer) = check_recursion_limit() {
+        return serialize_error_response(&answer);
+    }
+
     let mut query_struct: QueryRequest = match serde_json::from_slice(query) {
         Ok(query_struct) => query_struct,
         Err(err) => {
@@ -33,7 +39,7 @@ pub fn encrypt_and_query_chain(
 
     let encrypted_query = serde_json::to_vec(&query_struct).map_err(|err| {
         // this should never happen
-        error!(
+        debug!(
             "encrypt_and_query_chain() got an error while trying to serialize the query {:?} to pass to x/compute: {:?}",
             query_struct,
             err
@@ -43,7 +49,7 @@ pub fn encrypt_and_query_chain(
 
     // Call query_chain (this bubbles up to x/compute via ocalls and FFI to Go code)
     // This returns the answer from x/compute
-    let (result, query_used_gas) = query_chain(context, &encrypted_query);
+    let (result, query_used_gas) = query_chain(context, &encrypted_query, gas_limit);
     *gas_used = query_used_gas;
     let encrypted_answer_as_vec = result?;
 
@@ -64,10 +70,9 @@ pub fn encrypt_and_query_chain(
         }
     };
 
-    trace!(
+    debug!(
         "encrypt_and_query_chain() got encrypted answer with gas {}: {:?}",
-        gas_used,
-        encrypted_answer
+        gas_used, encrypted_answer
     );
 
     // decrypt query response
@@ -86,7 +91,7 @@ pub fn encrypt_and_query_chain(
                 let msg_b64_encrypted = msg.replace("query contract failed: encrypted: ", "");
                 match base64::decode(&msg_b64_encrypted) {
                     Err(err) => {
-                        error!(
+                        debug!(
                             "encrypt_and_query_chain() got an StdError as an answer {:?}, tried to decode \
                             the inner msg as bytes because it's encrypted, but got an error while trying to \
                             decode from base64: {}",
@@ -100,7 +105,7 @@ pub fn encrypt_and_query_chain(
                         match serde_json::from_slice::<StdError>(&decrypted) {
                             Ok(answer) => Ok(Err(answer)),
                             Err(err) => {
-                                error!("encrypt_and_query_chain() got an error while trying to deserialize the inner error as StdError: {:?}", err);
+                                debug!("encrypt_and_query_chain() got an error while trying to deserialize the inner error as StdError: {:?}", err);
                                 return system_error_invalid_response(decrypted, err);
                             }
                         }
@@ -124,7 +129,7 @@ pub fn encrypt_and_query_chain(
     );
 
     let answer_as_vec = serde_json::to_vec(&answer).map_err(|err| {
-        error!("encrypt_and_query_chain() got an error while trying to serialize the decrypted answer to bytes: {:?}", err);
+        debug!("encrypt_and_query_chain() got an error while trying to serialize the decrypted answer to bytes: {:?}", err);
         WasmEngineError::SerializationError
     })?;
 
@@ -132,7 +137,11 @@ pub fn encrypt_and_query_chain(
 }
 
 /// Safe wrapper around quering other contracts and modules
-fn query_chain(context: &Ctx, query: &[u8]) -> (Result<Vec<u8>, WasmEngineError>, u64) {
+fn query_chain(
+    context: &Ctx,
+    query: &[u8],
+    gas_limit: u64,
+) -> (Result<Vec<u8>, WasmEngineError>, u64) {
     let mut ocall_return = OcallReturn::Success;
     let mut enclave_buffer = std::mem::MaybeUninit::<EnclaveBuffer>::uninit();
     let mut vm_err = UntrustedVmError::default();
@@ -143,6 +152,7 @@ fn query_chain(context: &Ctx, query: &[u8]) -> (Result<Vec<u8>, WasmEngineError>
             context.unsafe_clone(),
             &mut vm_err,
             &mut gas_used,
+            gas_limit,
             enclave_buffer.as_mut_ptr(),
             query.as_ptr(),
             query.len(),
@@ -153,7 +163,7 @@ fn query_chain(context: &Ctx, query: &[u8]) -> (Result<Vec<u8>, WasmEngineError>
         match status {
             sgx_status_t::SGX_SUCCESS => { /* continue */ }
             error_status => {
-                error!(
+                warn!(
                     "query_chain() got an error from ocall_query_chain, stopping wasm: {:?}",
                     error_status
                 );
@@ -164,8 +174,10 @@ fn query_chain(context: &Ctx, query: &[u8]) -> (Result<Vec<u8>, WasmEngineError>
         match ocall_return {
             OcallReturn::Success => {
                 let enclave_buffer = enclave_buffer.assume_init();
-                // TODO add validation of this pointer before returning its contents.
-                exports::recover_buffer(enclave_buffer).unwrap_or_else(Vec::new)
+                match exports::recover_buffer(enclave_buffer) {
+                    Ok(buff) => buff.unwrap_or_default(),
+                    Err(err) => return (Err(err.into()), gas_used),
+                }
             }
             OcallReturn::Failure => return (Err(WasmEngineError::FailedOcall(vm_err)), gas_used),
             OcallReturn::Panic => return (Err(WasmEngineError::Panic), gas_used),
@@ -173,6 +185,21 @@ fn query_chain(context: &Ctx, query: &[u8]) -> (Result<Vec<u8>, WasmEngineError>
     };
 
     (Ok(value), gas_used)
+}
+
+/// Check whether the query is allowed to run.
+///
+/// We make sure that a recursion limit is in place in order to
+/// mitigate cases where the enclave runs out of memory.
+fn check_recursion_limit() -> Option<SystemResult<StdResult<Binary>>> {
+    if recursion_depth::limit_reached() {
+        debug!(
+            "Recursion limit reached while performing nested queries. Returning error to contract."
+        );
+        Some(Err(SystemError::ExceededRecursionLimit {}))
+    } else {
+        None
+    }
 }
 
 fn system_error_invalid_request<T>(request: &[u8], err: T) -> Result<Vec<u8>, WasmEngineError>
@@ -189,16 +216,7 @@ where
         error: err.to_string(),
     });
 
-    serde_json::to_vec(&answer).map_err(|err| {
-        // this should never happen
-        error!(
-            "encrypt_and_query_chain() got an error while trying to serialize the error {:?} returned to WASM: {:?}",
-            answer,
-            err
-        );
-
-        WasmEngineError::SerializationError
-    })
+    serialize_error_response(&answer)
 }
 
 fn system_error_invalid_response<T>(response: Vec<u8>, err: T) -> Result<Vec<u8>, WasmEngineError>
@@ -210,9 +228,15 @@ where
         error: err.to_string(),
     });
 
-    serde_json::to_vec(&answer).map_err(|err| {
+    serialize_error_response(&answer)
+}
+
+fn serialize_error_response(
+    answer: &SystemResult<StdResult<Binary>>,
+) -> Result<Vec<u8>, WasmEngineError> {
+    serde_json::to_vec(answer).map_err(|err| {
         // this should never happen
-        error!(
+        debug!(
             "encrypt_and_query_chain() got an error while trying to serialize the error {:?} returned to WASM: {:?}",
             answer,
             err
@@ -230,11 +254,16 @@ fn encrypt_query_request(
     let mut is_encrypted = false;
 
     // encrypt message
-    if let QueryRequest::Wasm(WasmQuery::Smart { msg, callback_code_hash, .. }) = query_struct {
+    if let QueryRequest::Wasm(WasmQuery::Smart {
+        msg,
+        callback_code_hash,
+        ..
+    }) = query_struct
+    {
         is_encrypted = true;
 
-        let mut hash_appended_msg = callback_code_hash.clone().as_bytes().to_vec();
-        hash_appended_msg.extend_from_slice(&msg.0.clone());
+        let mut hash_appended_msg = callback_code_hash.clone().into_bytes();
+        hash_appended_msg.extend_from_slice(&msg.0);
 
         let mut encrypted_msg = SecretMessage {
             msg: hash_appended_msg,
@@ -242,7 +271,7 @@ fn encrypt_query_request(
             nonce,
         };
         encrypted_msg.encrypt_in_place().map_err(|err| {
-            error!(
+            debug!(
                 "encrypt_and_query_chain() got an error while trying to encrypt the request for query {:?}, stopping wasm: {:?}",
                 String::from_utf8_lossy(&msg.0),
                 err
@@ -272,7 +301,7 @@ fn decrypt_query_response(
     };
 
     let b64_decrypted = as_secret_msg.decrypt().map_err(|err| {
-        error!(
+        debug!(
             "encrypt_and_query_chain() got an error while trying to decrypt the result for query {:?}, stopping wasm: {:?}",
             String::from_utf8_lossy(query),
             err
@@ -281,7 +310,7 @@ fn decrypt_query_response(
     })?;
 
     base64::decode(&b64_decrypted).map_err(|err| {
-        error!(
+        debug!(
             "encrypt_and_query_chain() got an answer, managed to decrypt it, then tried to decode the output from base64 to bytes and failed: {:?}",
             err
         );
@@ -302,7 +331,7 @@ fn decrypt_query_response_error(
     };
 
     error_msg.decrypt().map_err(|err| {
-        error!(
+        debug!(
             "encrypt_and_query_chain() got an error while trying to decrypt the inner error for query {:?}, stopping wasm: {:?}",
             String::from_utf8_lossy(&query),
             err

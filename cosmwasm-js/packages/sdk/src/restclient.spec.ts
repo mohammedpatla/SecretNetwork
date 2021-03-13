@@ -64,7 +64,7 @@ async function uploadCustomContract(
 ): Promise<PostTxsResponse> {
   const memo = "My first contract on chain";
   const theMsg: MsgStoreCode = {
-    type: "wasm/store-code",
+    type: "wasm/MsgStoreCode",
     value: {
       sender: faucet.address,
       wasm_byte_code: toBase64(wasmCode),
@@ -102,16 +102,18 @@ async function instantiateContract(
 ): Promise<PostTxsResponse> {
   const memo = "Create an escrow instance";
   const theMsg: MsgInstantiateContract = {
-    type: "wasm/instantiate",
+    type: "wasm/MsgInstantiateContract",
     value: {
       sender: faucet.address,
       code_id: codeId.toString(),
       label: "my escrow",
+      callback_code_hash: "",
       init_msg: {
         verifier: faucet.address,
         beneficiary: beneficiaryAddress,
       },
       init_funds: transferAmount || [],
+      callback_sig: null,
     },
   };
   const fee: StdFee = {
@@ -138,13 +140,14 @@ async function executeContract(
 ): Promise<PostTxsResponse> {
   const memo = "Time for action";
   const theMsg: MsgExecuteContract = {
-    type: "wasm/execute",
+    type: "wasm/MsgExecuteContract",
     value: {
       sender: faucet.address,
       callback_code_hash: "",
       contract: contractAddress,
       msg: { release: {} },
       sent_funds: [],
+      callback_sig: null,
     },
   };
   const fee: StdFee = {
@@ -670,25 +673,31 @@ describe("RestClient", () => {
       expect(hash.value).toEqual({
         code_id: deployedErc20.codeId.toString(),
         init_funds: [],
+        callback_code_hash: "",
         init_msg: jasmine.objectContaining({
           symbol: "HASH",
         }),
         label: "HASH",
         sender: faucet.address,
+        callback_sig: null,
       });
       expect(isa.value).toEqual({
         code_id: deployedErc20.codeId.toString(),
         init_funds: [],
+        callback_code_hash: "",
         init_msg: jasmine.objectContaining({ symbol: "ISA" }),
         label: "ISA",
         sender: faucet.address,
+        callback_sig: null,
       });
       expect(jade.value).toEqual({
         code_id: deployedErc20.codeId.toString(),
         init_funds: [],
+        callback_code_hash: "",
         init_msg: jasmine.objectContaining({ symbol: "JADE" }),
         label: "JADE",
         sender: faucet.address,
+        callback_sig: null,
       });
     });
 
@@ -726,25 +735,31 @@ describe("RestClient", () => {
         expect(hash.value).toEqual({
           code_id: deployedErc20.codeId.toString(),
           init_funds: [],
+          callback_code_hash: "",
           init_msg: jasmine.objectContaining({
             symbol: "HASH",
           }),
           label: "HASH",
           sender: faucet.address,
+          callback_sig: null,
         });
         expect(isa.value).toEqual({
           code_id: deployedErc20.codeId.toString(),
           init_funds: [],
+          callback_code_hash: "",
           init_msg: jasmine.objectContaining({ symbol: "ISA" }),
           label: "ISA",
           sender: faucet.address,
+          callback_sig: null,
         });
         expect(jade.value).toEqual({
           code_id: deployedErc20.codeId.toString(),
           init_funds: [],
+          callback_code_hash: "",
           init_msg: jasmine.objectContaining({ symbol: "JADE" }),
           label: "JADE",
           sender: faucet.address,
+          callback_sig: null,
         });
       }
     });
@@ -1319,42 +1334,6 @@ describe("RestClient", () => {
         }
       });
 
-      it("can get all state", async () => {
-        pendingWithoutWasmd();
-
-        // get contract state
-        const state = await client.getAllContractState(contractAddress!);
-        expect(state.length).toEqual(1);
-        const data = state[0];
-        expect(data.key).toEqual(expectedKey);
-        const value = JSON.parse(fromAscii(data.val));
-        expect(value.verifier).toBeDefined();
-        expect(value.beneficiary).toBeDefined();
-
-        // bad address is empty array
-        const noContractState = await client.getAllContractState(noContract);
-        expect(noContractState).toEqual([]);
-      });
-
-      it("can query by key", async () => {
-        pendingWithoutWasmd();
-
-        // query by one key
-        const raw = await client.queryContractRaw(contractAddress!, expectedKey);
-        assert(raw, "must get result");
-        const model = JSON.parse(fromAscii(raw));
-        expect(model.verifier).toBeDefined();
-        expect(model.beneficiary).toBeDefined();
-
-        // missing key is null
-        const missing = await client.queryContractRaw(contractAddress!, fromHex("cafe0dad"));
-        expect(missing).toBeNull();
-
-        // bad address is null
-        const noContractModel = await client.queryContractRaw(noContract, expectedKey);
-        expect(noContractModel).toBeNull();
-      });
-
       it("can make smart queries", async () => {
         pendingWithoutWasmd();
 
@@ -1365,8 +1344,7 @@ describe("RestClient", () => {
         // invalid query syntax throws an error
         await client.queryContractSmart(contractAddress!, { nosuchkey: {} }).then(
           () => fail("shouldn't succeed"),
-          (error) =>
-            expect(error).toMatch(/query contract failed: parsing hackatom::contract::QueryMsg/),
+          (error) => expect(error).toMatch(/query contract failed: parsing hackatom::contract::QueryMsg/),
         );
 
         // invalid address throws an error

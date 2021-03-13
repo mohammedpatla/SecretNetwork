@@ -24,6 +24,8 @@ import (
 	"github.com/enigmampc/cosmos-sdk/baseapp"
 	"github.com/enigmampc/cosmos-sdk/client/flags"
 
+	//"github.com/CosmWasm/wasmd/app"
+
 	app "github.com/enigmampc/SecretNetwork"
 	scrt "github.com/enigmampc/SecretNetwork/types"
 	sdk "github.com/enigmampc/cosmos-sdk/types"
@@ -154,8 +156,7 @@ func newApp(logger log.Logger, db dbm.DB, traceStore io.Writer) abci.Application
 		baseapp.SetMinGasPrices(viper.GetString(server.FlagMinGasPrices)),
 		baseapp.SetHaltHeight(viper.GetUint64(server.FlagHaltHeight)),
 		baseapp.SetHaltTime(viper.GetUint64(server.FlagHaltTime)),
-		baseapp.SetInterBlockCache(cache),
-	)
+		baseapp.SetInterBlockCache(cache))
 }
 
 func exportAppStateAndTMValidators(
@@ -190,7 +191,7 @@ func updateTmParamsAndInit(ctx *server.Context, cdc *codec.Codec, mbm module.Bas
 
 		appConfigFilePath := filepath.Join(defaultNodeHome, "config/app.toml")
 		appConf, _ := serverconfig.ParseConfig()
-		appConf.MinGasPrices = "1.0uscrt"
+		appConf.MinGasPrices = "0.25uscrt"
 
 		serverconfig.WriteConfigFile(appConfigFilePath, appConf)
 

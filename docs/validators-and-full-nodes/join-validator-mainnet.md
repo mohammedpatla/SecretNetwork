@@ -6,10 +6,10 @@
 
 #### 2. Set your `minimum-gas-price` parameter
 
-We recommend starting with `0.1uscrt` per gas unit:
+We recommend starting with `0.25uscrt` per gas unit:
 
 ```bash
-perl -i -pe 's/^minimum-gas-prices = .+?$/minimum-gas-prices = "0.1uscrt"/' ~/.secretd/config/app.toml
+perl -i -pe 's/^minimum-gas-prices = .+?$/minimum-gas-prices = "0.25uscrt"/' ~/.secretd/config/app.toml
 sudo systemctl restart secret-node
 ```
 
@@ -64,6 +64,7 @@ secretcli tx staking create-validator \
   --commission-max-rate="0.20" \
   --commission-max-change-rate="0.01" \
   --min-self-delegation="1" \
+  --gas-prices 0.25uscrt \
   --moniker=<MONIKER> \
   --from=<key-alias>
 ```
@@ -91,7 +92,7 @@ Conditions for downtime:
 Penalties for downtime:
 
 - Slashing of 1% of your and your delegators' staking amount.
-- Jailing for 10 minutes of your validator node. You don't earn block rewards for this period and at the end must manually unjail your node with `secretcli tx slashing unjail --from <key-alias>`.
+- Jailing for 10 minutes of your validator node. You don't earn block rewards for this period and at the end must manually unjail your node with `secretcli tx slashing unjail --from <key-alias> --gas-prices 0.25uscrt`.
 
 #### Slashing for double-signing
 
@@ -115,13 +116,22 @@ See [Sentry Nodes](sentry-nodes.md).
 In order to stake more tokens beyond those in the initial transaction, run:
 
 ```bash
-secretcli tx staking delegate $(secretcli keys show <key-alias> --bech=val -a) <amount>uscrt --from <key-alias>
+secretcli tx staking delegate $(secretcli keys show <key-alias> --bech=val -a) <amount>uscrt --from <key-alias> --gas-prices 0.25uscrt
 ```
 
-### Renaming your moniker
+### Editing your Validator
 
 ```bash
-secretcli tx staking edit-validator --moniker <new-moniker> --from <key-alias>
+secretcli tx staking edit-validator
+  --moniker="<new-moniker>" \
+  --website="https://scrt.network" \
+  --identity=6A0D65E29A4CBC8E \
+  --details="To infinity and beyond!" \
+  --chain-id=<chain_id> \
+  --gas="auto" \
+  --gas-prices="0.025uscrt" \
+  --from=<key_name> \
+  --commission-rate="0.10"
 ```
 
 ### Seeing your rewards from being a validator
@@ -139,13 +149,13 @@ secretcli q distribution commission $(secretcli keys show -a <key-alias> --bech=
 ### Withdrawing rewards
 
 ```bash
-secretcli tx distribution withdraw-rewards $(secretcli keys show --bech=val -a <key-alias>) --from <key-alias>
+secretcli tx distribution withdraw-rewards $(secretcli keys show --bech=val -a <key-alias>) --from <key-alias> --gas-prices 0.25uscrt
 ```
 
 ### Withdrawing rewards+commissions
 
 ```bash
-secretcli tx distribution withdraw-rewards $(secretcli keys show --bech=val -a <key-alias>) --from <key-alias> --commission
+secretcli tx distribution withdraw-rewards $(secretcli keys show --bech=val -a <key-alias>) --from <key-alias> --commission --gas-prices 0.25uscrt
 ```
 
 ### Removing your validator
@@ -159,7 +169,7 @@ You are currently unable to modify the `--commission-max-rate` and `--commission
 Modifying the commision-rate can be done using this:
 
 ```
-secretcli tx staking edit-validator --commission-rate="0.05" --from <key-alias>
+secretcli tx staking edit-validator --commission-rate="0.05" --from <key-alias> --gas-prices 0.25uscrt
 ```
 
 ### Slashing
@@ -169,7 +179,7 @@ secretcli tx staking edit-validator --commission-rate="0.05" --from <key-alias>
 To unjail your jailed validator
 
 ```bash
-secretcli tx slashing unjail --from <key-alias>
+secretcli tx slashing unjail --from <key-alias> --gas-prices 0.25uscrt
 ```
 
 ##### Signing Info
@@ -194,4 +204,4 @@ You can get the current slashing parameters via:
 
 ```bash
 secretcli q slashing params
-```s
+```

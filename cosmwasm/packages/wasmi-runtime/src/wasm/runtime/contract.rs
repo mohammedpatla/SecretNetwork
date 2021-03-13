@@ -94,7 +94,7 @@ impl ContractInstance {
     /// extract_vector extracts a vector from the wasm memory space
     pub fn extract_vector(&self, vec_ptr_ptr: u32) -> Result<Vec<u8>, WasmEngineError> {
         self.extract_vector_inner(vec_ptr_ptr).map_err(|err| {
-            error!(
+            debug!(
                 "error while trying to read the buffer at {:?} : {:?}",
                 vec_ptr_ptr, err
             );
@@ -118,7 +118,7 @@ impl ContractInstance {
 
     pub fn allocate(&mut self, len: u32) -> Result<u32, WasmEngineError> {
         self.allocate_inner(len).map_err(|err| {
-            error!("Failed to allocate {} bytes in wasm: {}", len, err);
+            debug!("Failed to allocate {} bytes in wasm: {}", len, err);
             WasmEngineError::MemoryAllocationError
         })
     }
@@ -147,7 +147,7 @@ impl ContractInstance {
     ) -> Result<u32, WasmEngineError> {
         self.write_to_allocated_memory_inner(buffer, ptr_to_region_in_wasm_vm)
             .map_err(|err| {
-                error!(
+                debug!(
                     "error while trying to write the buffer {:?} to the destination buffer at {:?} : {:?}",
                     buffer, ptr_to_region_in_wasm_vm, err
                 );
@@ -218,7 +218,7 @@ impl ContractInstance {
         // Check if new amount is bigger than gas limit
         // If is above the limit, halt execution
         if self.is_gas_depleted() {
-            warn!(
+            debug!(
                 "Out of gas! Gas limit: {}, gas used: {}, gas used externally: {}",
                 self.gas_limit, self.gas_used, self.gas_used_externally
             );
@@ -231,6 +231,12 @@ impl ContractInstance {
     fn is_gas_depleted(&self) -> bool {
         self.gas_limit < self.gas_used.saturating_add(self.gas_used_externally)
     }
+
+    fn gas_left(&self) -> u64 {
+        self.gas_limit
+            .saturating_sub(self.gas_used)
+            .saturating_sub(self.gas_used_externally)
+    }
 }
 
 impl WasmiApi for ContractInstance {
@@ -242,7 +248,7 @@ impl WasmiApi for ContractInstance {
         let state_key_name = self
             .extract_vector(state_key_ptr_ptr as u32)
             .map_err(|err| {
-                error!("read_db() error while trying to read state_key_name from wasm memory");
+                debug!("read_db() error while trying to read state_key_name from wasm memory");
                 err
             })?;
 
@@ -269,7 +275,7 @@ impl WasmiApi for ContractInstance {
         );
 
         let ptr_to_region_in_wasm_vm = self.write_to_memory(&value).map_err(|err| {
-            error!(
+            debug!(
                 "read_db() error while trying to allocate {} bytes for the value",
                 value.len(),
             );
@@ -292,7 +298,7 @@ impl WasmiApi for ContractInstance {
         let state_key_name = self
             .extract_vector(state_key_ptr_ptr as u32)
             .map_err(|err| {
-                error!("remove_db() error while trying to read state_key_name from wasm memory");
+                debug!("remove_db() error while trying to read state_key_name from wasm memory");
                 err
             })?;
 
@@ -325,11 +331,11 @@ impl WasmiApi for ContractInstance {
         let state_key_name = self
             .extract_vector(state_key_ptr_ptr as u32)
             .map_err(|err| {
-                error!("write_db() error while trying to read state_key_name from wasm memory");
+                debug!("write_db() error while trying to read state_key_name from wasm memory");
                 err
             })?;
         let value = self.extract_vector(value_ptr_ptr as u32).map_err(|err| {
-            error!("write_db() error while trying to read value from wasm memory");
+            debug!("write_db() error while trying to read value from wasm memory");
             err
         })?;
 
@@ -342,7 +348,7 @@ impl WasmiApi for ContractInstance {
         let used_gas =
             write_encrypted_key(&state_key_name, &value, &self.context, &self.contract_key)
                 .map_err(|err| {
-                    error!(
+                    debug!(
                         "write_db() error while trying to write the value to state: {:?}",
                         err
                     );
@@ -366,7 +372,7 @@ impl WasmiApi for ContractInstance {
         self.use_gas_externally(self.gas_costs.external_canonicalize_address as u64)?;
 
         let human = self.extract_vector(human_ptr_ptr as u32).map_err(|err| {
-            error!(
+            debug!(
                 "canonicalize_address() error while trying to read human address from wasm memory"
             );
             err
@@ -380,57 +386,64 @@ impl WasmiApi for ContractInstance {
         // Turn Vec<u8> to str
         let mut human_addr_str = match std::str::from_utf8(&human) {
             Err(err) => {
-                error!(
+                debug!(
                     "canonicalize_address() error while trying to parse human address from bytes to string: {:?}",
                     err
                 );
-                return Ok(Some(RuntimeValue::I32(-1)));
+                return Ok(Some(RuntimeValue::I32(
+                    self.write_to_memory(b"input is not valid UTF-8")? as i32,
+                )));
             }
             Ok(x) => x,
         };
 
         human_addr_str = human_addr_str.trim();
         if human_addr_str.is_empty() {
-            return Ok(Some(RuntimeValue::I32(-2)));
+            return Ok(Some(RuntimeValue::I32(
+                self.write_to_memory(b"input is empty")? as i32,
+            )));
         }
 
         let (decoded_prefix, data) = match bech32::decode(&human_addr_str) {
             Err(err) => {
-                error!(
+                debug!(
                     "canonicalize_address() error while trying to decode human address {:?} as bech32: {:?}",
                     human_addr_str, err
                 );
-                return Ok(Some(RuntimeValue::I32(-3)));
+                return Ok(Some(RuntimeValue::I32(
+                    self.write_to_memory(err.to_string().as_bytes())? as i32,
+                )));
             }
             Ok(x) => x,
         };
 
         if decoded_prefix != BECH32_PREFIX_ACC_ADDR {
-            warn!(
+            debug!(
                 "canonicalize_address() wrong prefix {:?} (expected {:?}) while decoding human address {:?} as bech32",
                 decoded_prefix,
                 BECH32_PREFIX_ACC_ADDR,
                 human_addr_str
             );
-            return Ok(Some(RuntimeValue::I32(-4)));
+            return Ok(Some(RuntimeValue::I32(
+                self.write_to_memory(
+                    format!("wrong address prefix: {:?}", decoded_prefix).as_bytes(),
+                )? as i32,
+            )));
         }
 
-        let canonical = match Vec::<u8>::from_base32(&data) {
-            Err(err) => {
-                // Assaf: From reading https://docs.rs/bech32/0.7.2/src/bech32/lib.rs.html#607
-                // and https://docs.rs/bech32/0.7.2/src/bech32/lib.rs.html#228 I don't think this can fail that way
-                warn!(
-                    "canonicalize_address() error while trying to decode bytes from base32 {:?}: {:?}",
-                    data, err
-                );
-                return Ok(Some(RuntimeValue::I32(-5)));
-            }
-            Ok(x) => x,
-        };
+        let canonical = Vec::<u8>::from_base32(&data).map_err(|err| {
+            // Assaf: From reading https://docs.rs/bech32/0.7.2/src/bech32/lib.rs.html#607
+            // and https://docs.rs/bech32/0.7.2/src/bech32/lib.rs.html#228 I don't think this can fail that way
+            debug!(
+                "canonicalize_address() error while trying to decode bytes from base32 {:?}: {:?}",
+                data, err
+            );
+            WasmEngineError::Base32Error
+        })?;
 
         self.write_to_allocated_memory(&canonical, canonical_ptr_ptr as u32)
             .map_err(|err| {
-                error!(
+                debug!(
                     "canonicalize_address() error while trying to write the answer {:?} to the destination buffer",
                     canonical,
                 );
@@ -456,7 +469,7 @@ impl WasmiApi for ContractInstance {
         let canonical = self
             .extract_vector(canonical_ptr_ptr as u32)
             .map_err(|err| {
-                error!(
+                debug!(
                     "humanize_address() error while trying to read canonical address from wasm memory",
                 );
                 err
@@ -471,8 +484,10 @@ impl WasmiApi for ContractInstance {
             Err(err) => {
                 // Assaf: IMO This can never fail. From looking at bech32::encode, it only fails
                 // because input prefix issues. For us the prefix is always "secert" which is valid.
-                error!("humanize_address() error while trying to encode canonical address {:?} to human: {:?}",  canonical, err);
-                return Ok(Some(RuntimeValue::I32(-1)));
+                debug!("humanize_address() error while trying to encode canonical address {:?} to human: {:?}",  canonical, err);
+                return Ok(Some(RuntimeValue::I32(
+                    self.write_to_memory(err.to_string().as_bytes())? as i32,
+                )));
             }
             Ok(x) => x,
         };
@@ -481,7 +496,7 @@ impl WasmiApi for ContractInstance {
 
         self.write_to_allocated_memory(&human_bytes, human_ptr_ptr as u32)
             .map_err(|err| {
-                error!(
+                debug!(
                     "humanize_address() error while trying to write the answer {:?} to the destination buffer",
                     human_bytes,
                 );
@@ -495,7 +510,7 @@ impl WasmiApi for ContractInstance {
     // stub, for now
     fn query_chain_index(&mut self, query_ptr_ptr: i32) -> Result<Option<RuntimeValue>, Trap> {
         let query_buffer = self.extract_vector(query_ptr_ptr as u32).map_err(|err| {
-            error!("query_chain() error while trying to read canonical address from wasm memory",);
+            debug!("query_chain() error while trying to read canonical address from wasm memory",);
             err
         })?;
 
@@ -513,6 +528,7 @@ impl WasmiApi for ContractInstance {
             self.user_nonce,
             self.user_public_key,
             &mut gas_used,
+            self.gas_left(),
         )?;
 
         trace!(
@@ -524,7 +540,7 @@ impl WasmiApi for ContractInstance {
         self.use_gas_externally(gas_used)?;
 
         let ptr_to_region_in_wasm_vm = self.write_to_memory(&answer).map_err(|err| {
-            error!(
+            debug!(
                 "query_chain() error while trying to allocate and write the answer {:?} to the WASM VM",
                 answer,
             );
@@ -537,6 +553,21 @@ impl WasmiApi for ContractInstance {
 
     fn gas_index(&mut self, gas_amount: i32) -> Result<Option<RuntimeValue>, Trap> {
         self.use_gas(gas_amount as u64)?;
+        Ok(None)
+    }
+
+    #[cfg(feature = "debug-print")]
+    fn debug_print_index(&self, message_ptr_ptr: i32) -> Result<Option<RuntimeValue>, Trap> {
+        let message_buffer = self.extract_vector(message_ptr_ptr as u32).map_err(|err| {
+            debug!("debug_print() error while trying to read message from wasm memory",);
+            err
+        })?;
+
+        let message =
+            String::from_utf8(message_buffer).unwrap_or_else(|err| hex::encode(err.into_bytes()));
+
+        info!("debug_print: {:?}", message);
+
         Ok(None)
     }
 }

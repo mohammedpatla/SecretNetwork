@@ -28,6 +28,7 @@ use crate::consts::{SigningMethod, MRSIGNER, SIGNING_METHOD};
 
 #[cfg(feature = "SGX_MODE_HW")]
 use super::report::{AttestationReport, SgxQuoteStatus};
+use crate::registration::report::AdvisoryIDs;
 use enclave_ffi_types::NodeAuthResult;
 
 extern "C" {
@@ -298,7 +299,7 @@ pub fn verify_ra_cert(cert_der: &[u8]) -> Result<Vec<u8>, NodeAuthResult> {
 
     // 2. Verify quote status (mandatory field)
 
-    verify_quote_status(&report.sgx_quote_status)?;
+    verify_quote_status(&report.sgx_quote_status, &report.advisroy_ids)?;
 
     // verify certificate
     match SIGNING_METHOD {
@@ -313,7 +314,7 @@ pub fn verify_ra_cert(cert_der: &[u8]) -> Result<Vec<u8>, NodeAuthResult> {
 
             if report.sgx_quote_body.isv_enclave_report.mr_enclave != this_mr_enclave {
                 error!("Got a different mr_enclave than expected. Invalid certificate");
-                debug!(
+                warn!(
                     "received: {:?} \n expected: {:?}",
                     report.sgx_quote_body.isv_enclave_report.mr_enclave, this_mr_enclave
                 );
@@ -323,7 +324,7 @@ pub fn verify_ra_cert(cert_der: &[u8]) -> Result<Vec<u8>, NodeAuthResult> {
         SigningMethod::MRSIGNER => {
             if report.sgx_quote_body.isv_enclave_report.mr_signer != MRSIGNER {
                 error!("Got a different mrsigner than expected. Invalid certificate");
-                debug!(
+                warn!(
                     "received: {:?} \n expected: {:?}",
                     report.sgx_quote_body.isv_enclave_report.mr_signer, MRSIGNER
                 );
@@ -338,12 +339,25 @@ pub fn verify_ra_cert(cert_der: &[u8]) -> Result<Vec<u8>, NodeAuthResult> {
 }
 
 #[cfg(all(feature = "SGX_MODE_HW", feature = "production"))]
-pub fn verify_quote_status(quote_status: &SgxQuoteStatus) -> Result<(), NodeAuthResult> {
+pub fn verify_quote_status(
+    quote_status: &SgxQuoteStatus,
+    advisories: &AdvisoryIDs,
+) -> Result<(), NodeAuthResult> {
     match quote_status {
         SgxQuoteStatus::OK => Ok(()),
-        SgxQuoteStatus::SwHardeningNeeded => {
-            // warn!("Attesting enclave is vulnerable, and should be patched");
-            Ok(())
+        SgxQuoteStatus::SwHardeningNeeded => Ok(()),
+        SgxQuoteStatus::ConfigurationAndSwHardeningNeeded => {
+            let vulnerable = advisories.vulnerable();
+            if vulnerable.is_empty() {
+                Ok(())
+            } else {
+                error!("Platform is updated but requires further BIOS configuration");
+                error!(
+                    "The following vulnerabilities must be mitigated: {:?}",
+                    vulnerable
+                );
+                Err(NodeAuthResult::from(quote_status))
+            }
         }
         _ => {
             error!(
@@ -356,20 +370,33 @@ pub fn verify_quote_status(quote_status: &SgxQuoteStatus) -> Result<(), NodeAuth
 }
 
 #[cfg(all(feature = "SGX_MODE_HW", not(feature = "production")))]
-pub fn verify_quote_status(quote_status: &SgxQuoteStatus) -> Result<(), NodeAuthResult> {
+pub fn verify_quote_status(
+    quote_status: &SgxQuoteStatus,
+    advisories: &AdvisoryIDs,
+) -> Result<(), NodeAuthResult> {
     match quote_status {
         SgxQuoteStatus::OK => Ok(()),
-        SgxQuoteStatus::SwHardeningNeeded => {
-            // warn!("Attesting enclave is vulnerable, and should be patched");
-            Ok(())
-        }
+        SgxQuoteStatus::SwHardeningNeeded => Ok(()),
         SgxQuoteStatus::GroupOutOfDate => {
             warn!("TCB level of SGX platform service is outdated. You should check for firmware updates");
+            warn!(
+                "The following vulnerabilities must be mitigated: {:?}",
+                advisories.vulnerable()
+            );
             Ok(())
         }
         SgxQuoteStatus::ConfigurationAndSwHardeningNeeded => {
-            warn!("Platform is updated but requires further BIOS configuration");
-            Ok(())
+            let vulnerable = advisories.vulnerable();
+            if vulnerable.is_empty() {
+                Ok(())
+            } else {
+                error!("Platform is updated but requires further BIOS configuration");
+                error!(
+                    "The following vulnerabilities must be mitigated: {:?}",
+                    vulnerable
+                );
+                Err(NodeAuthResult::from(quote_status))
+            }
         }
         _ => {
             error!(
@@ -385,24 +412,86 @@ pub fn verify_quote_status(quote_status: &SgxQuoteStatus) -> Result<(), NodeAuth
 pub mod tests {
     use crate::crypto::KeyPair;
 
-    use super::sgx_quote_sign_type_t;
     use super::verify_ra_cert;
+    use crate::registration::report::AttestationReport;
+    use enclave_ffi_types::NodeAuthResult;
+    use std::io::Read;
+    use std::untrusted::fs::File;
 
-    fn test_validate_certificate_valid_sw_mode() {
-        pub const cert: &[u8] = include_bytes!("../testdata/attestation_cert");
-        let result = verify_ra_cert(cert);
+    fn tls_ra_cert_der_out_of_date() -> Vec<u8> {
+        let mut cert = vec![];
+        let mut f = File::open(
+            "../wasmi-runtime/src/registration/fixtures/attestation_cert_out_of_date.der",
+        )
+        .unwrap();
+        f.read_to_end(&mut cert).unwrap();
+
+        cert
     }
 
-    fn test_validate_certificate_valid_signed() {
-        pub const cert: &[u8] = include_bytes!("../testdata/attestation_cert.der");
-        let result = verify_ra_cert(cert);
+    fn tls_ra_cert_der_sw_config_needed() -> Vec<u8> {
+        let mut cert = vec![];
+        let mut f = File::open(
+            "../wasmi-runtime/src/registration/fixtures/attestation_cert_sw_config_needed.der",
+        )
+        .unwrap();
+        f.read_to_end(&mut cert).unwrap();
+
+        cert
     }
 
-    fn test_validate_certificate_invalid() {
-        pub const cert: &[u8] = include_bytes!("../testdata/attestation_cert_invalid");
-        let result = verify_ra_cert(cert);
+    #[cfg(feature = "SGX_MODE_HW")]
+    fn tls_ra_cert_der_valid() -> Vec<u8> {
+        let mut cert = vec![];
+        let mut f = File::open("../wasmi-runtime/src/registration/fixtures/attestation_cert_hw_v2")
+            .unwrap();
+        f.read_to_end(&mut cert).unwrap();
+
+        cert
     }
 
-    // we want a weird test because this should never crash
-    fn test_random_bytes_as_certificate() {}
+    #[cfg(not(feature = "SGX_MODE_HW"))]
+    fn tls_ra_cert_der_valid() -> Vec<u8> {
+        let mut cert = vec![];
+        let mut f =
+            File::open("../wasmi-runtime/src/registration/fixtures/attestation_cert_sw").unwrap();
+        f.read_to_end(&mut cert).unwrap();
+
+        cert
+    }
+
+    #[cfg(not(feature = "SGX_MODE_HW"))]
+    pub fn test_certificate_invalid_configuration_needed() {}
+
+    #[cfg(feature = "SGX_MODE_HW")]
+    pub fn test_certificate_invalid_configuration_needed() {
+        let tls_ra_cert = tls_ra_cert_der_sw_config_needed();
+        let report = AttestationReport::from_cert(&tls_ra_cert);
+        assert!(report.is_ok());
+
+        let result =
+            verify_ra_cert(&tls_ra_cert).expect_err("Certificate should not pass validation");
+
+        assert_eq!(result, NodeAuthResult::SwHardeningAndConfigurationNeeded)
+    }
+
+    #[cfg(not(feature = "SGX_MODE_HW"))]
+    pub fn test_certificate_invalid_group_out_of_date() {}
+
+    #[cfg(feature = "SGX_MODE_HW")]
+    pub fn test_certificate_invalid_group_out_of_date() {
+        let tls_ra_cert = tls_ra_cert_der_out_of_date();
+        let report = AttestationReport::from_cert(&tls_ra_cert);
+        assert!(report.is_ok());
+
+        let result =
+            verify_ra_cert(&tls_ra_cert).expect_err("Certificate should not pass validation");
+
+        assert_eq!(result, NodeAuthResult::GroupOutOfDate)
+    }
+
+    pub fn test_certificate_valid() {
+        let tls_ra_cert = tls_ra_cert_der_valid();
+        let result = verify_ra_cert(&tls_ra_cert).unwrap();
+    }
 }

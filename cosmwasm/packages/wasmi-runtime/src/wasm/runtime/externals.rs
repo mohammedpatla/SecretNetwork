@@ -15,6 +15,8 @@ pub enum HostFunctions {
     HumanizeAddressIndex = 4,
     GasIndex = 5,
     QueryChainIndex = 6,
+    #[cfg(feature = "debug-print")]
+    DebugPrintIndex = 254,
     Unknown,
 }
 
@@ -32,6 +34,8 @@ impl From<usize> for HostFunctions {
             }
             x if x == HostFunctions::GasIndex as usize => HostFunctions::GasIndex,
             x if x == HostFunctions::QueryChainIndex as usize => HostFunctions::QueryChainIndex,
+            #[cfg(feature = "debug-print")]
+            x if x == HostFunctions::DebugPrintIndex as usize => HostFunctions::DebugPrintIndex,
             _ => HostFunctions::Unknown,
         }
     }
@@ -53,7 +57,7 @@ impl Externals for ContractInstance {
         match HostFunctions::from(index) {
             HostFunctions::ReadDbIndex => {
                 let key: i32 = args.nth_checked(0).map_err(|err| {
-                    error!(
+                    warn!(
                         "read_db() error reading arguments, stopping wasm: {:?}",
                         err
                     );
@@ -63,7 +67,7 @@ impl Externals for ContractInstance {
             }
             HostFunctions::RemoveDbIndex => {
                 let key: i32 = args.nth_checked(0).map_err(|err| {
-                    error!(
+                    warn!(
                         "remove_db() error reading arguments, stopping wasm: {:?}",
                         err
                     );
@@ -73,7 +77,7 @@ impl Externals for ContractInstance {
             }
             HostFunctions::WriteDbIndex => {
                 let key: i32 = args.nth_checked(0).map_err(|err| {
-                    error!(
+                    warn!(
                         "write_db() error reading arguments, stopping wasm: {:?}",
                         err
                     );
@@ -86,7 +90,7 @@ impl Externals for ContractInstance {
             }
             HostFunctions::CanonicalizeAddressIndex => {
                 let human: i32 = args.nth_checked(0).map_err(|err| {
-                    error!(
+                    warn!(
                         "canonicalize_address() error reading arguments, stopping wasm: {:?}",
                         err
                     );
@@ -100,7 +104,7 @@ impl Externals for ContractInstance {
             // fn humanize_address(canonical: *const c_void, human: *mut c_void) -> i32;
             HostFunctions::HumanizeAddressIndex => {
                 let canonical: i32 = args.nth_checked(0).map_err(|err| {
-                    error!(
+                    warn!(
                         "humanize_address() error reading first argument, stopping wasm: {:?}",
                         err
                     );
@@ -108,7 +112,7 @@ impl Externals for ContractInstance {
                 })?;
 
                 let human: i32 = args.nth_checked(1).map_err(|err| {
-                    error!(
+                    warn!(
                         "humanize_address() error reading second argument, stopping wasm: {:?}",
                         err
                     );
@@ -119,7 +123,7 @@ impl Externals for ContractInstance {
             }
             HostFunctions::QueryChainIndex => {
                 let query: i32 = args.nth_checked(0).map_err(|err| {
-                    error!(
+                    warn!(
                         "query_chain() error reading argument, stopping wasm: {:?}",
                         err
                     );
@@ -130,13 +134,25 @@ impl Externals for ContractInstance {
             }
             HostFunctions::GasIndex => {
                 let gas_amount: i32 = args.nth_checked(0).map_err(|err| {
-                    error!("gas() error reading arguments, stopping wasm: {:?}", err);
+                    warn!("gas() error reading arguments, stopping wasm: {:?}", err);
                     err
                 })?;
                 self.gas_index(gas_amount)
             }
+            #[cfg(feature = "debug-print")]
+            HostFunctions::DebugPrintIndex => {
+                let message: i32 = args.nth_checked(0).map_err(|err| {
+                    warn!(
+                        "debug_print() error reading argument, stopping wasm: {:?}",
+                        err
+                    );
+                    err
+                })?;
+
+                self.debug_print_index(message)
+            }
             HostFunctions::Unknown => {
-                error!("unknown function index");
+                warn!("unknown function index");
                 Err(WasmEngineError::NonExistentImportFunction.into())
             }
         }

@@ -42,24 +42,17 @@ secretcli tx gov submit-proposal \
 You may also provide the proposal directly through the `--proposal` flag which points to a JSON file containing the proposal:
 
 ```bash
-secretcli tx gov submit-proposal \
-  --type Text \
-  --proposal <path/to/proposal.json> \
-  --from <key_alias>
+secretcli tx gov submit-proposal --proposal <path/to/proposal.json> --from <key_alias>
 ```
 
 Where `proposal.json` is:
 
 ```json
 {
+  "type": "Text",
   "title": "My Cool Proposal",
   "description": "A description with line breaks \n and `code formatting`",
-  "deposit": [
-    {
-      "denom": "uscrt",
-      "amount": "1000000"
-    }
-  ]
+  "deposit": "1000000uscrt"
 }
 ```
 
@@ -93,7 +86,7 @@ Where `proposal.json` is:
 }
 ```
 
-You can see another `param-change` example here: [enigma-1-proposal-3.json](<[/docs/enigma-1-proposal-3.json](https://github.com/enigmampc/SecretNetwork/blob/4561c0904c7b7659f019b96147cde13ac8db0933/enigma-1-proposal-3.json)>)
+You can see another `param-change` example here: [enigma-1-proposal-3.json](https://github.com/enigmampc/SecretNetwork/blob/4561c0904c7b7659f019b96147cde13ac8db0933/enigma-1-proposal-3.json)
 
 #### Subspaces, Keys and Values
 
@@ -107,6 +100,8 @@ You can see another `param-change` example here: [enigma-1-proposal-3.json](<[/d
 | `bank`         | `sendenabled`             | bool             | `true`                                                                                                    |
 | `crisis`       | `ConstantFee`             | object (coin)    | `{"denom": "uscrt", "amount": "1000"}`                                                                    |
 | `distribution` | `communitytax`            | string (dec)     | `"0.020000000000000000"`                                                                                  |
+| `distribution` | `secretfoundationtax`     | string (dec)     | `"0.030000000000000000"`                                                                                  |
+| `distribution` | `secretfoundationaddress` | string           | `"secret164z7wwzv84h4hwn6rvjjkns6j4ht43jv8u9k0c"`                                                         |
 | `distribution` | `baseproposerreward`      | string (dec)     | `"0.010000000000000000"`                                                                                  |
 | `distribution` | `bonusproposerreward`     | string (dec)     | `"0.040000000000000000"`                                                                                  |
 | `distribution` | `withdrawaddrenabled`     | bool             | `true`                                                                                                    |
@@ -115,12 +110,12 @@ You can see another `param-change` example here: [enigma-1-proposal-3.json](<[/d
 | `gov`          | `votingparams`            | object           | `{"voting_period": "172800000000000"}`                                                                    |
 | `gov`          | `tallyparams`             | object           | `{"quorum": "0.334000000000000000", "threshold": "0.500000000000000000", "veto": "0.334000000000000000"}` |
 | `mint`         | `MintDenom`               | string           | `"uscrt"`                                                                                                 |
-| `mint`         | `InflationRateChange`     | string (dec)     | `"0.130000000000000000"`                                                                                  |
-| `mint`         | `InflationMax`            | string (dec)     | `"0.200000000000000000"`                                                                                  |
+| `mint`         | `InflationRateChange`     | string (dec)     | `"0.080000000000000000"`                                                                                  |
+| `mint`         | `InflationMax`            | string (dec)     | `"0.150000000000000000"`                                                                                  |
 | `mint`         | `InflationMin`            | string (dec)     | `"0.070000000000000000"`                                                                                  |
 | `mint`         | `GoalBonded`              | string (dec)     | `"0.670000000000000000"`                                                                                  |
 | `mint`         | `BlocksPerYear`           | string (uint64)  | `"6311520"`                                                                                               |
-| `slashing`     | `SignedBlocksWindow`      | string (int64)   | `"100"`                                                                                                   |
+| `slashing`     | `SignedBlocksWindow`      | string (int64)   | `"5000"`                                                                                                  |
 | `slashing`     | `MinSignedPerWindow`      | string (dec)     | `"0.500000000000000000"`                                                                                  |
 | `slashing`     | `DowntimeJailDuration`    | string (time ns) | `"600000000000"`                                                                                          |
 | `slashing`     | `SlashFractionDoubleSign` | string (dec)     | `"0.050000000000000000"`                                                                                  |

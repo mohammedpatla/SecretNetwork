@@ -6,19 +6,19 @@
 //! Types that contain information about attestation report.
 //! The implementation is based on Attestation Service API version 4.
 //! https://api.trustedservices.intel.com/documents/sgx-attestation-api-spec.pdf
+use lazy_static::lazy_static;
 use log::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::array::TryFromSliceError;
+use std::collections::HashMap;
 use std::convert::TryFrom;
-// use std::prelude::v1::*;
-use std::time::SystemTime;
-use std::untrusted::time::SystemTimeEx;
 use uuid::Uuid;
 
 use super::cert::{get_ias_auth_config, get_netscape_comment};
 use enclave_ffi_types::NodeAuthResult;
 
+#[derive(Debug)]
 pub enum Error {
     ReportParseError,
     ReportValidationError,
@@ -199,11 +199,11 @@ impl SgxEnclaveReport {
         let _report_data = take(64)?;
         let mut _it = _report_data.iter();
         for i in report_data.iter_mut() {
-            *i = *_it.next().ok_or_else(|| Error::ReportParseError)?;
+            *i = *_it.next().ok_or(Error::ReportParseError)?;
         }
 
         if pos != bytes.len() {
-            error!("Enclave report parsing error.");
+            warn!("Enclave report parsing error.");
             return Err(Error::ReportParseError);
         };
 
@@ -419,7 +419,7 @@ impl SgxQuote {
                 pos += n;
                 Ok(ret)
             } else {
-                error!("Quote parsing error.");
+                warn!("Quote parsing error.");
                 Err(Error::ReportParseError)
             }
         };
@@ -434,7 +434,7 @@ impl SgxQuote {
                     0 => SgxEpidQuoteSigType::Unlinkable,
                     1 => SgxEpidQuoteSigType::Linkable,
                     _ => {
-                        error!("Invalid v1 quote signature type");
+                        warn!("Invalid v1 quote signature type");
                         return Err(Error::ReportParseError);
                     }
                 };
@@ -447,7 +447,7 @@ impl SgxQuote {
                     0 => SgxEpidQuoteSigType::Unlinkable,
                     1 => SgxEpidQuoteSigType::Linkable,
                     _ => {
-                        error!("Invalid v2 quote signature type");
+                        warn!("Invalid v2 quote signature type");
                         return Err(Error::ReportParseError);
                     }
                 };
@@ -460,33 +460,33 @@ impl SgxQuote {
                     2 => SgxEcdsaQuoteAkType::P256_256,
                     3 => SgxEcdsaQuoteAkType::P384_384,
                     _ => {
-                        error!("Quote parsing error - ecdsa quote type invalid");
+                        warn!("Quote parsing error - ecdsa quote type invalid");
                         return Err(Error::ReportParseError);
                     }
                 };
                 SgxQuoteVersion::V3(attestation_key_type)
             }
             _ => {
-                error!("Quote parsing error - Unknown quote version");
+                warn!("Quote parsing error - Unknown quote version");
                 return Err(Error::ReportParseError);
             }
         };
 
         // off 4, size 4
         let gid = u32::from_le_bytes(<[u8; 4]>::try_from(take(4).map_err(|_| {
-            error!("Failed to parse quote gid");
+            warn!("Failed to parse quote gid");
             Error::ReportParseError
         })?)?);
 
         // off 8, size 2
         let isv_svn_qe = u16::from_le_bytes(<[u8; 2]>::try_from(take(2).map_err(|_| {
-            error!("Failed to parse quote isv svn qe");
+            warn!("Failed to parse quote isv svn qe");
             Error::ReportParseError
         })?)?);
 
         // off 10, size 2
         let isv_svn_pce = u16::from_le_bytes(<[u8; 2]>::try_from(take(2).map_err(|_| {
-            error!("Failed to parse quote isv svn");
+            warn!("Failed to parse quote isv svn");
             Error::ReportParseError
         })?)?);
 
@@ -494,24 +494,24 @@ impl SgxQuote {
         let qe_vendor_id_raw =
             <[u8; 16]>::try_from(take(16).map_err(|_| Error::ReportParseError)?)?;
         let qe_vendor_id = Uuid::from_slice(&qe_vendor_id_raw).map_err(|_| {
-            error!("Failed to parse quote vendor id");
+            warn!("Failed to parse quote vendor id");
             Error::ReportParseError
         })?;
 
         // off 28, size 20
         let user_data = <[u8; 20]>::try_from(take(20).map_err(|_| {
-            error!("Failed to parse quote user data");
+            warn!("Failed to parse quote user data");
             Error::ReportParseError
         })?)?;
 
         // off 48, size 384
         let isv_enclave_report = SgxEnclaveReport::parse_from(take(384).map_err(|_| {
-            error!("Failed to parse enclave report");
+            warn!("Failed to parse enclave report");
             Error::ReportParseError
         })?)?;
 
         if pos != bytes.len() {
-            error!("Quote parsing error - Quote size different from expected");
+            warn!("Quote parsing error - Quote size different from expected");
             return Err(Error::ReportParseError);
         };
 
@@ -524,6 +524,47 @@ impl SgxQuote {
             user_data,
             isv_enclave_report,
         })
+    }
+}
+
+#[cfg(all(feature = "SGX_MODE_HW", not(feature = "production")))]
+const WHITELISTED_ADVISORIES: &[&str] = &["INTEL-SA-00334", "INTEL-SA-00219"];
+
+#[cfg(all(feature = "SGX_MODE_HW", feature = "production"))]
+const WHITELISTED_ADVISORIES: &[&str] = &["INTEL-SA-00334", "INTEL-SA-00219"];
+
+lazy_static! {
+    static ref ADVISORY_DESC: HashMap<&'static str, &'static str> = [
+        (
+            "INTEL-SA-00161",
+            "You must disable hyperthreading in the BIOS"
+        ),
+        (
+            "INTEL-SA-00289",
+            "You must disable overclocking/undervolting in the BIOS"
+        ),
+    ]
+    .iter()
+    .copied()
+    .collect();
+}
+
+#[derive(Debug)]
+pub struct AdvisoryIDs(pub Vec<String>);
+
+#[cfg(feature = "SGX_MODE_HW")]
+impl AdvisoryIDs {
+    pub(crate) fn vulnerable(&self) -> Vec<String> {
+        let mut vulnerable: Vec<String> = vec![];
+        for i in self.0.iter() {
+            if !WHITELISTED_ADVISORIES.contains(&i.as_str()) {
+                vulnerable.push(i.clone());
+                if let Some(v) = ADVISORY_DESC.get(&i.as_str()) {
+                    vulnerable.push((*v).to_string())
+                }
+            }
+        }
+        vulnerable
     }
 }
 
@@ -540,6 +581,7 @@ pub struct AttestationReport {
     /// Content of the quote
     pub sgx_quote_body: SgxQuote,
     pub platform_info_blob: Option<Vec<u8>>,
+    pub advisroy_ids: AdvisoryIDs,
 }
 
 impl AttestationReport {
@@ -556,11 +598,11 @@ impl AttestationReport {
         // Convert to endorsed report
         let report: EndorsedAttestationReport = serde_json::from_slice(&payload)?;
 
-        // Verify report's signature
+        // Verify report's signature - aka intel's signing cert
         let signing_cert = webpki::EndEntityCert::from(&report.signing_cert)
             .map_err(|_| Error::ReportParseError)?;
 
-        let (cert, root_store) = get_ias_auth_config();
+        let (ias_cert, root_store) = get_ias_auth_config();
 
         let trust_anchors: Vec<webpki::TrustAnchor> = root_store
             .roots
@@ -569,29 +611,26 @@ impl AttestationReport {
             .collect();
 
         let mut chain: Vec<&[u8]> = Vec::new();
-        chain.push(&cert);
+        chain.push(&ias_cert);
 
-        let now_func = match webpki::Time::try_from(SystemTime::now()) {
-            Ok(val) => val,
-            Err(_e) => {
-                error!("Failed to get local time");
-                return Err(Error::ReportParseError);
-            }
-        };
+        // set as 04.11.23(dd.mm.yy) - should be valid for the foreseeable future, and not rely on SystemTime
+        let time_stamp = webpki::Time::from_seconds_since_unix_epoch(1_699_088_856);
 
-        // todo: figure out what to do when the certificate expires
+        // note: there's no way to not validate the time, and we don't want to write this code
+        // ourselves. We also can't just ignore the error message, since that means that the rest of
+        // the validation didn't happen (time is validated early on)
         match signing_cert.verify_is_valid_tls_server_cert(
             SUPPORTED_SIG_ALGS,
             &webpki::TLSServerTrustAnchors(&trust_anchors),
             &chain,
-            now_func,
+            time_stamp,
         ) {
-            Ok(_) => debug!("Certificate verified successfully"),
+            Ok(_) => info!("Certificate verified successfully"),
             Err(e) => {
                 error!("Certificate verification error {:?}", e);
                 return Err(Error::ReportValidationError);
             }
-        }
+        };
 
         // Verify the signature against the signing cert
         match signing_cert.verify_signature(
@@ -599,44 +638,31 @@ impl AttestationReport {
             &report.report,
             &report.signature,
         ) {
-            Ok(_) => debug!("Signature verified successfully"),
+            Ok(_) => info!("Signature verified successfully"),
             Err(e) => {
-                error!("Signature verification error {:?}", e);
+                warn!("Signature verification error {:?}", e);
                 return Err(Error::ReportParseError);
             }
         }
 
         // Verify and extract information from attestation report
         let attn_report: Value = serde_json::from_slice(&report.report)?;
-        debug!("attn_report: {}", attn_report);
+        trace!("attn_report: {}", attn_report);
 
         // Verify API version is supported
         let version = attn_report["version"]
             .as_u64()
-            .ok_or_else(|| Error::ReportParseError)?;
+            .ok_or(Error::ReportParseError)?;
 
         if version != 4 {
-            error!("API version incompatible");
+            warn!("API version incompatible");
             return Err(Error::ReportParseError);
         };
 
-        // Get quote freshness
-        // todo: this happens on-chain, so we cannot validate time like this or we will encounter non-deterministic behaviour
-        // let freshness = {
-        //     let time = attn_report["timestamp"]
-        //         .as_str()
-        //         .ok_or_else(|| Error::GenericError)?;
-        //     let time_fixed = String::from(time) + "+0000";
-        //     let date_time = DateTime::parse_from_str(&time_fixed, "%Y-%m-%dT%H:%M:%S%.f%z")?;
-        //     let ts = date_time.naive_utc();
-        //     let now = DateTime::<chrono::offset::Utc>::from(SystemTime::now()).naive_utc();
-        //     let quote_freshness = u64::try_from((now - ts).num_seconds())?;
-        //     std::time::Duration::from_secs(quote_freshness)
-        // };
         let mut platform_info_blob = None;
         if let Some(blob) = attn_report["platformInfoBlob"].as_str() {
             let as_binary = hex::decode(blob).map_err(|_| {
-                error!("Error parsing platform info");
+                warn!("Error parsing platform info");
                 Error::ReportParseError
             })?;
             platform_info_blob = Some(as_binary)
@@ -647,7 +673,7 @@ impl AttestationReport {
             let status_string = attn_report["isvEnclaveQuoteStatus"]
                 .as_str()
                 .ok_or_else(|| {
-                    error!("Error parsing enclave quote status");
+                    warn!("Error parsing enclave quote status");
                     Error::ReportParseError
                 })?;
             SgxQuoteStatus::from(status_string)
@@ -656,15 +682,22 @@ impl AttestationReport {
         // Get quote body
         let sgx_quote_body = {
             let quote_encoded = attn_report["isvEnclaveQuoteBody"].as_str().ok_or_else(|| {
-                error!("Error unpacking enclave quote body");
+                warn!("Error unpacking enclave quote body");
                 Error::ReportParseError
             })?;
             let quote_raw = base64::decode(&quote_encoded.as_bytes()).map_err(|_| {
-                error!("Error decoding encoded quote body");
+                warn!("Error decoding encoded quote body");
                 Error::ReportParseError
             })?;
             SgxQuote::parse_from(quote_raw.as_slice())?
         };
+
+        // Get advisories
+        let advisories: Vec<String> = serde_json::from_value(attn_report["advisoryIDs"].clone())
+            .map_err(|_| {
+                warn!("Failed to decode advisories");
+                Error::ReportParseError
+            })?;
 
         // We don't actually validate the public key, since we use ephemeral certificates,
         // and all we really care about that the report is valid and the key that is saved in the
@@ -674,6 +707,7 @@ impl AttestationReport {
             sgx_quote_status,
             sgx_quote_body,
             platform_info_blob,
+            advisroy_ids: AdvisoryIDs(advisories),
         })
     }
 }
@@ -688,7 +722,8 @@ pub mod tests {
 
     fn tls_ra_cert_der_v3() -> Vec<u8> {
         let mut cert = vec![];
-        let mut f = File::open("fixtures/tls_ra_cert_v3.der").unwrap();
+        let mut f =
+            File::open("../wasmi-runtime/src/registration/fixtures/tls_ra_cert_v3.der").unwrap();
         f.read_to_end(&mut cert).unwrap();
 
         cert
@@ -696,7 +731,21 @@ pub mod tests {
 
     fn tls_ra_cert_der_v4() -> Vec<u8> {
         let mut cert = vec![];
-        let mut f = File::open("fixtures/tls_ra_cert_v4.der").unwrap();
+        let mut f = File::open(
+            "../wasmi-runtime/src/registration/fixtures/attestation_cert_out_of_date.der",
+        )
+        .unwrap();
+        f.read_to_end(&mut cert).unwrap();
+
+        cert
+    }
+
+    fn tls_ra_cert_der_out_of_date() -> Vec<u8> {
+        let mut cert = vec![];
+        let mut f = File::open(
+            "../wasmi-runtime/src/registration/fixtures/attestation_cert_sw_config_needed.der",
+        )
+        .unwrap();
         f.read_to_end(&mut cert).unwrap();
 
         cert
@@ -704,7 +753,8 @@ pub mod tests {
 
     fn ias_root_ca_cert_der() -> Vec<u8> {
         let mut cert = vec![];
-        let mut f = File::open("fixtures/ias_root_ca_cert.der").unwrap();
+        let mut f =
+            File::open("../wasmi-runtime/src/registration/fixtures/ias_root_ca_cert.der").unwrap();
         f.read_to_end(&mut cert).unwrap();
 
         cert
@@ -742,15 +792,7 @@ pub mod tests {
         report
     }
 
-    // pub fn run_tests() -> bool {
-    //     run_tests!(
-    //         test_sgx_quote_parse_from,
-    //         test_attestation_report_from_cert,
-    //         test_attestation_report_from_cert_api_version_not_compatible
-    //     )
-    // }
-
-    fn test_sgx_quote_parse_from() {
+    pub fn test_sgx_quote_parse_from() {
         let attn_report = attesation_report();
         let sgx_quote_body_encoded = attn_report["isvEnclaveQuoteBody"].as_str().unwrap();
         let quote_raw = base64::decode(&sgx_quote_body_encoded.as_bytes()).unwrap();
@@ -810,7 +852,7 @@ pub mod tests {
         );
     }
 
-    fn test_attestation_report_from_cert() {
+    pub fn test_attestation_report_from_cert() {
         let tls_ra_cert = tls_ra_cert_der_v4();
         let report = AttestationReport::from_cert(&tls_ra_cert);
         assert!(report.is_ok());
@@ -819,7 +861,19 @@ pub mod tests {
         assert_eq!(report.sgx_quote_status, SgxQuoteStatus::GroupOutOfDate);
     }
 
-    fn test_attestation_report_from_cert_api_version_not_compatible() {
+    pub fn test_attestation_report_from_cert_invalid() {
+        let tls_ra_cert = tls_ra_cert_der_v4();
+        let report = AttestationReport::from_cert(&tls_ra_cert);
+        assert!(report.is_ok());
+
+        let report = report.unwrap();
+        assert_eq!(
+            report.sgx_quote_status,
+            SgxQuoteStatus::ConfigurationAndSwHardeningNeeded
+        );
+    }
+
+    pub fn test_attestation_report_from_cert_api_version_not_compatible() {
         let tls_ra_cert = tls_ra_cert_der_v3();
         let report = AttestationReport::from_cert(&tls_ra_cert);
         assert!(report.is_err());

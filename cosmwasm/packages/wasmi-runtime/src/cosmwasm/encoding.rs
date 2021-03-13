@@ -22,7 +22,7 @@ impl Binary {
     /// fails if it is not valid base64
     pub fn from_base64(encoded: &str) -> Result<Self, EnclaveError> {
         let binary = base64::decode(encoded).map_err(|err| {
-            error!("Failed to decode base64 string: {:?}", err.to_string());
+            warn!("Failed to decode base64 string: {:?}", err.to_string());
             EnclaveError::FailedToDeserialize
         })?;
         Ok(Binary(binary))
@@ -86,8 +86,8 @@ impl<'de> de::Visitor<'de> for Base64Visitor {
     }
 
     fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
+    where
+        E: de::Error,
     {
         match Binary::from_base64(v) {
             Ok(binary) => Ok(binary),
