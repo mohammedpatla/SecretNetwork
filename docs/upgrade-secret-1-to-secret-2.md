@@ -1,6 +1,8 @@
 # Network Upgrade Instructions from `secret-1` to `secret-2`
 
-:warning: Please read carefully before you begin the upgrade.
+::: tip
+Please read carefully before you begin the upgrade.
+:::
 
 - [Network Upgrade Instructions from `secret-1` to `secret-2`](#network-upgrade-instructions-from-secret-1-to-secret-2)
 - [Validators](#validators)
@@ -15,9 +17,13 @@
 
 All coordination efforts will be done in the [#mainnet-validators](https://chat.scrt.network/channel/mainnet-validators) channel in the Secret Network Rocket.Chat.
 
-:warning: Don't delete your `secret-1` machine, as we might have to relaunch it.
+::: danger 
+Don't delete your `secret-1` machine, as we might have to relaunch it.
+:::
 
-:warning: If your SGX machine has a previous `secretnetwork` installation on it (e.g. from the testnet), you will need to remove it before you continue:
+::: warning
+If your SGX machine has a previous `secretnetwork` installation on it (e.g. from the testnet), you will need to remove it before you continue
+:::
 
 ```bash
 cd ~

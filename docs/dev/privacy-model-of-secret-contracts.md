@@ -424,12 +424,14 @@ Another point to consider. If the attacker had additional knowledge, for example
 1. `{"send":{"amount":55}}`
 2. `{"tsfr":{"amount":123}}`
 
+::: danger
 Note that a client side solution can also be applied, but this is considered a very bad practice in infosec, as you cannot guarantee control of the client. E.g. you could pad the input to the maximum possible in this contract before encrypting it on the client side:
 
 1. `{"send":{ "amount" : 55 } }`
 2. `{"transfer":{"amount":123}}`
 
 Again, this is very not recommended as you cannot guarantee control of the client!
+:::
 
 ## Differences in state key sizes
 

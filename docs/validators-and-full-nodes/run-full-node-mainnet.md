@@ -76,8 +76,11 @@ If you haven't **already created a key**, use these steps to create a secret add
 secretcli keys add <key-alias>
 ```
 
-**:warning:Note:warning:: Backup the mnemonics!**
-**:warning:Note:warning:: Please make sure you also [backup your validator](backup-a-validator.md)**
+::: danger
+Backup the mnemonics -> If you dont hold your seed you dont hold your tokens
+
+Please make sure you also [backup your validator](backup-a-validator.md)
+:::
 
 **Note**: If you already have a key you can import it with the bip39 mnemonic with `secretcli keys add <key-alias> --recover` or with `secretcli keys export` (exports to `stderr`!!) & `secretcli keys import`.
 

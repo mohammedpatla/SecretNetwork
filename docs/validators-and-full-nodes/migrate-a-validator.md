@@ -1,8 +1,10 @@
 # Migrate a Validator
 
-:warning: :warning: :warning:
+::: warning
 
 Please make sure you [backup your validator](backup-a-validator.md) before you migrate it.
+
+:::
 
 ### 1. [Run a new full node](run-full-node-mainnet.md) on a new machine.
 
