@@ -5,7 +5,7 @@ module.exports = {
   themeConfig: {
     logo: "/logo.png",
     nav: [
-      { text: "Home", link: "https://scrt.network" },
+      { text: "Website", link: "https://scrt.network" },
       { text: "Blog", link: "https://blog.scrt.network" },
       { text: "Chat", link: "https://chat.scrt.network" },
       { text: "Forum", link: "https://forum.scrt.network" },
@@ -181,7 +181,12 @@ module.exports = {
       },
       {
         title: "Secret Wiki",
-        path: "https://learn.scrt.network/",
+        collapsable: true,
+        sidebarDepth: 0,
+        children: [
+          "/wiki/clouds",
+          "/wiki/projects",
+        ],
       },
     ],
   },
